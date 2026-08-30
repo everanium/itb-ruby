@@ -1,0 +1,12 @@
+# Bundler
+/vendor/bundle/
+/.bundle/
+Gemfile.lock
+
+# Built gem packages
+*.gem
+/pkg/
+
+# Test / coverage artefacts
+/coverage/
+/tmp/
