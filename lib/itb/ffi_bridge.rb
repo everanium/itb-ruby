@@ -15,7 +15,8 @@ module ITB
   # 3. The OS default loader path (+LD_LIBRARY_PATH+, +ld.so.cache+,
   #    +DYLD_LIBRARY_PATH+, +PATH+).
   #
-  # Every prototype mirrors cmd/cshared/libitb.h. uintptr_t handles
+  # Every prototype mirrors the ITB_Triple_* exports of cmd/cshared.
+  # uintptr_t handles
   # cross as +:size_t+ (same width on every supported platform);
   # input buffers cross as +:buffer_in+ so Ruby Strings are borrowed
   # without an explicit MemoryPointer; output buffers cross as
@@ -73,18 +74,25 @@ module ITB
     attach_function :ITB_LastError, [:buffer_out, :size_t, :pointer], :int
     attach_function :ITB_SetMemoryLimit, [:int64], :int64
     attach_function :ITB_SetGCPercent, [:int], :int
-    attach_function :ITB_HashCount, [], :int
-    attach_function :ITB_HashName, [:int, :buffer_out, :size_t, :pointer], :int
-    attach_function :ITB_HashWidth, [:int], :int
 
     # -- Triple Pipeline surface ----------------------------------------
     attach_function :ITB_Triple_Init,
                     [:string, :string, :buffer_out, :size_t, :pointer, :pointer],
                     :int, blocking: true
-    attach_function :ITB_Triple_Open,
-                    [:string, :buffer_in, :size_t, :string,
+    attach_function :ITB_Triple_Load,
+                    [:buffer_in, :size_t,
                      :buffer_in, :size_t, :buffer_in, :size_t, :size_t, :pointer],
                     :int, blocking: true
+    attach_function :ITB_Triple_LoadF,
+                    [:string,
+                     :buffer_in, :size_t, :buffer_in, :size_t, :size_t, :pointer],
+                    :int, blocking: true
+    attach_function :ITB_Triple_Save,
+                    [:size_t, :buffer_out, :size_t, :pointer], :int
+    attach_function :ITB_Triple_SaveF, [:size_t, :string], :int
+    attach_function :ITB_Triple_Inspect,
+                    [:buffer_in, :size_t, :buffer_out, :size_t, :pointer], :int
+    attach_function :ITB_Triple_MaxWorkers, [:size_t, :int], :int
     attach_function :ITB_Triple_Rekey,
                     [:size_t, :buffer_in, :size_t, :buffer_in, :size_t,
                      :buffer_out, :size_t, :pointer],
@@ -103,7 +111,10 @@ module ITB
     attach_function :ITB_Triple_DecryptMessage,
                     [:size_t, :buffer_in, :size_t, :buffer_out, :size_t, :pointer],
                     :int, blocking: true
-    attach_function :ITB_Triple_RegisterProfile, [:string, :string], :int
+    attach_function :ITB_Triple_Register, [:string, :string], :int
+    attach_function :ITB_Triple_Lookup,
+                    [:string, :buffer_out, :size_t, :pointer], :int
+    attach_function :ITB_Triple_Profiles, [:buffer_out, :size_t, :pointer], :int
     attach_function :ITB_Triple_EncryptStreamBegin, [:size_t, :pointer], :int
     attach_function :ITB_Triple_DecryptStreamBegin, [:size_t, :pointer], :int
     attach_function :ITB_Triple_StreamWrite,
@@ -141,7 +152,7 @@ module ITB
     # (buffer, capacity, length-out-pointer), and on BUFFER_TOO_SMALL
     # retry once with the exact size the FFI reported through the
     # length out-param. The retry is gated on the reported length
-    # strictly exceeding the current capacity (pattern P1).
+    # strictly exceeding the current capacity.
     def self.retry_once(cap)
       buf = FFI::MemoryPointer.new(cap)
       need = FFI::MemoryPointer.new(:size_t)

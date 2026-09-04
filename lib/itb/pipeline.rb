@@ -3,10 +3,10 @@
 require "uri"
 
 module ITB
-  # A Triple Pipeline session plus its exported blob bytes.
+  # A Triple Pipeline session.
   #
-  # The blob carries the session bundle the receiver feeds to
-  # ITB.open; #rekey refreshes it. #close zeroes key material inside
+  # #save returns the serialised session blob the receiver feeds to
+  # ITB.load; #rekey refreshes it. #close zeroes key material inside
   # libitb; #free releases the Go-side handle (a GC finalizer covers
   # the non-explicit path).
   #
@@ -14,48 +14,15 @@ module ITB
   # chunk, so plaintext of verified chunks is released before a later
   # chunk can fail authentication.
   class Pipeline
-    # Floor capacity for blob output buffers (Init / Rekey).
+    # Floor capacity for blob output buffers (Init / Save / Rekey).
     BLOB_CAP = 64 * 1024
 
-    # Constructs a session against the named profile. With +blob+ nil
-    # a fresh session is initialised (ITB_Triple_Init); with +blob+
-    # given the session is reconstructed from a bundle produced by a
-    # prior init or #rekey (ITB_Triple_Open). +opts+ is an opts string
-    # or Hash rendered to the URL-query grammar libitb validates;
-    # +masters+ is nil to use the blob-embedded masters or a
-    # +[perm, wrap]+ pair to override them (open path only).
-    def initialize(profile, blob = nil, opts = nil, masters: nil)
-      opts_s = self.class.render_opts(opts)
-      handle_ptr = FFI::MemoryPointer.new(:size_t)
-      if blob.nil?
-        # On a blob-buffer retry the Init re-runs and yields a fresh
-        # session (the undersized attempt is closed by libitb before
-        # returning).
-        @blob = FFIBridge.retry_once(BLOB_CAP) do |buf, cap, need|
-          FFIBridge.ITB_Triple_Init(profile, opts_s, buf, cap, need, handle_ptr)
-        end
-      else
-        blob_b = FFIBridge.as_bytes(blob)
-        if masters.nil?
-          pm, wm, count = "", "", 0
-        else
-          pm = FFIBridge.as_bytes(masters[0])
-          wm = FFIBridge.as_bytes(masters[1])
-          raise Error, "master override buffers must be non-empty" if pm.empty? || wm.empty?
-
-          count = 2
-        end
-        FFIBridge.check(
-          FFIBridge.ITB_Triple_Open(
-            profile, blob_b, blob_b.bytesize, opts_s,
-            pm, pm.bytesize, wm, wm.bytesize, count, handle_ptr
-          )
-        )
-        @blob = blob_b
-      end
+    # Not part of the public API -- use Pipeline.init / Pipeline.load /
+    # Pipeline.load_f (or the ITB module shortcuts).
+    def initialize(handle)
       # The one-element box is shared with the finalizer proc so the
       # proc does not capture self (which would defeat GC).
-      @handle_box = [handle_ptr.read(:size_t)]
+      @handle_box = [handle]
       # Serialises access to the pooled Message scratch buffer; the
       # blocking FFI calls release the GVL, so concurrent
       # encrypt_message / decrypt_message on one Pipeline would
@@ -64,18 +31,98 @@ module ITB
       ObjectSpace.define_finalizer(self, self.class.finalizer(@handle_box))
     end
 
-    # The exported session bundle bytes for the receiver side.
-    attr_reader :blob
+    # Constructs a fresh session against the named profile
+    # (ITB_Triple_Init). +opts+ is an opts string or Hash rendered to
+    # the URL-query grammar libitb validates. The session blob is
+    # available through #save. On a blob-buffer retry the Init re-runs
+    # and yields a fresh session (the undersized attempt is closed by
+    # libitb before returning).
+    def self.init(profile, opts = nil)
+      opts_s = render_opts(opts)
+      handle_ptr = FFI::MemoryPointer.new(:size_t)
+      FFIBridge.retry_once(BLOB_CAP) do |buf, cap, need|
+        FFIBridge.ITB_Triple_Init(profile, opts_s, buf, cap, need, handle_ptr)
+      end
+      new(handle_ptr.read(:size_t))
+    end
 
-    # Rotates the parallax + wrapper masters and refreshes #blob. Must
-    # not run concurrently with cipher calls or open stream sessions
-    # on the same Pipeline.
+    # Reconstructs a session from a blob produced by #save or #rekey
+    # (ITB_Triple_Load). The blob's embedded profile record is the
+    # sole structural source -- no profile name, no opts. +masters+ is
+    # nil to use the blob-embedded masters or a +[perm, wrap]+ pair to
+    # override them.
+    def self.load(blob, masters: nil)
+      blob_b = FFIBridge.as_bytes(blob)
+      pm, wm, count = masters_triple(masters)
+      handle_ptr = FFI::MemoryPointer.new(:size_t)
+      FFIBridge.check(
+        FFIBridge.ITB_Triple_Load(
+          blob_b, blob_b.bytesize, pm, pm.bytesize, wm, wm.bytesize, count, handle_ptr
+        )
+      )
+      new(handle_ptr.read(:size_t))
+    end
+
+    # Pipeline.load for a blob stored in a file (ITB_Triple_LoadF);
+    # the file is read inside the library.
+    def self.load_f(path, masters: nil)
+      pm, wm, count = masters_triple(masters)
+      handle_ptr = FFI::MemoryPointer.new(:size_t)
+      FFIBridge.check(
+        FFIBridge.ITB_Triple_LoadF(
+          path.to_s, pm, pm.bytesize, wm, wm.bytesize, count, handle_ptr
+        )
+      )
+      new(handle_ptr.read(:size_t))
+    end
+
+    # Folds the optional +[perm, wrap]+ pair into the
+    # (perm_master, wrap_master, masters_count) triple the Load entries
+    # take: count 0 selects the blob-embedded masters, count 2
+    # overrides them.
+    def self.masters_triple(masters)
+      return ["", "", 0] if masters.nil?
+
+      [FFIBridge.as_bytes(masters[0]), FFIBridge.as_bytes(masters[1]), 2]
+    end
+    private_class_method :masters_triple
+
+    # The current serialised session blob (binary String) -- the bytes
+    # init produced, the bytes load re-marshalled, or the bytes of the
+    # latest #rekey.
+    def save
+      h = handle
+      FFIBridge.retry_once(BLOB_CAP) do |buf, cap, need|
+        FFIBridge.ITB_Triple_Save(h, buf, cap, need)
+      end
+    end
+
+    # Writes the current session blob to +path+ inside the library
+    # (mode 0600; the containing directory must exist).
+    def save_f(path)
+      FFIBridge.check(FFIBridge.ITB_Triple_SaveF(handle, path.to_s))
+      nil
+    end
+
+    # Rotates the parallax + wrapper masters and returns the refreshed
+    # session blob (also observable through #save). Must not run
+    # concurrently with cipher calls or open stream sessions on the
+    # same Pipeline.
     def rekey(perm, wrap)
       pm = FFIBridge.as_bytes(perm)
       wm = FFIBridge.as_bytes(wrap)
-      @blob = FFIBridge.retry_once([BLOB_CAP, @blob.bytesize].max) do |buf, cap, need|
-        FFIBridge.ITB_Triple_Rekey(handle, pm, pm.bytesize, wm, wm.bytesize, buf, cap, need)
+      h = handle
+      FFIBridge.retry_once(BLOB_CAP) do |buf, cap, need|
+        FFIBridge.ITB_Triple_Rekey(h, pm, pm.bytesize, wm, wm.bytesize, buf, cap, need)
       end
+    end
+
+    # Sets the worker cap for every subsequent cipher call. +n+ is
+    # clamped, never rejected: n <= 0 selects auto (runtime.NumCPU),
+    # 1..256 pins the cap, larger values are treated as 256. The cap
+    # is per-machine tuning and is never written to the blob.
+    def max_workers(n)
+      FFIBridge.check(FFIBridge.ITB_Triple_MaxWorkers(handle, n))
       nil
     end
 
@@ -173,10 +220,8 @@ module ITB
       nil
     end
 
-    # The blob bytes are elided -- session-bundle material does not
-    # belong in debug logs.
     def inspect
-      "#<ITB::Pipeline blob_len=#{@blob.bytesize}>"
+      "#<ITB::Pipeline #{handle.zero? ? 'freed' : 'open'}>"
     end
     alias to_s inspect
 
@@ -232,8 +277,8 @@ module ITB
     end
 
     # Shared body for the buffer-in / buffer-out cipher entries.
-    # Retry-once discipline matches FFIBridge.retry_once (pattern P1):
-    # on BUFFER_TOO_SMALL with a reported length strictly above the
+    # Retry-once discipline matches FFIBridge.retry_once: on
+    # BUFFER_TOO_SMALL with a reported length strictly above the
     # current capacity, the scratch grows to the exact size and the
     # call re-runs once.
     def cipher(sym, src)

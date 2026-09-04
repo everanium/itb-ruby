@@ -5,20 +5,27 @@
 # Subcommands:
 #
 #   itb.rb version                                   library + binding versions
-#   itb.rb hashes                                    shipped hash primitive roster
+#   itb.rb profiles                                  registered profile catalogue
+#   itb.rb inspect <blob-hex>                        profile record of a blob
 #   itb.rb encrypt <profile> <in-file> <out-file>    Single Message encrypt
 #   itb.rb decrypt <profile> <blob-hex> <in-file> <out-file>
 #
-# encrypt prints the session blob to stderr as hex; feed that hex back
-# to decrypt on the receiving side.
+# encrypt prints the session blob (Pipeline#save) to stderr as hex;
+# feed that hex back to decrypt on the receiving side, which reopens
+# the session with ITB.load (the profile argument only routes Single
+# Message versus streaming). profiles lists the registered profile
+# catalogue one name per line; the profiles that carry a cipher
+# surface are the ones encrypt / decrypt accept.
 
 $LOAD_PATH.unshift(File.expand_path("../lib", __dir__))
 require "fileutils"
+require "json"
 require "itb"
 
 USAGE = <<~TEXT
   usage: itb.rb version
-         itb.rb hashes
+         itb.rb profiles
+         itb.rb inspect <blob-hex>
          itb.rb encrypt <profile> <in-file> <out-file>
          itb.rb decrypt <profile> <blob-hex> <in-file> <out-file>
 TEXT
@@ -28,10 +35,18 @@ def cmd_version
   puts "itb-ruby #{ITB::VERSION}"
 end
 
-def cmd_hashes
-  ITB.hashes.each_with_index do |h, i|
-    printf("%2d  %-12s %d bits\n", i, h.name, h.width)
-  end
+def cmd_profiles
+  ITB.profiles.each { |name| puts name }
+end
+
+def blob_from_hex(blob_hex)
+  raise ITB::Error, "blob hex: odd length or non-hex characters" unless blob_hex.match?(/\A(?:[0-9a-fA-F]{2})+\z/)
+
+  [blob_hex].pack("H*")
+end
+
+def cmd_inspect(blob_hex)
+  puts JSON.pretty_generate(ITB.inspect_blob(blob_from_hex(blob_hex)))
 end
 
 # Profiles whose canonical name begins with "streaming-" route
@@ -69,7 +84,7 @@ def cmd_encrypt(profile, infile, outfile)
     end
     ensure_parent_dir(outfile)
     File.binwrite(outfile, wire)
-    warn pipe.blob.unpack1("H*")
+    warn pipe.save.unpack1("H*")
   ensure
     pipe.free
   end
@@ -77,11 +92,9 @@ def cmd_encrypt(profile, infile, outfile)
 end
 
 def cmd_decrypt(profile, blob_hex, infile, outfile)
-  raise ITB::Error, "blob hex: odd length or non-hex characters" unless blob_hex.match?(/\A(?:[0-9a-fA-F]{2})+\z/)
-
-  blob = [blob_hex].pack("H*")
+  blob = blob_from_hex(blob_hex)
   wire = File.binread(infile)
-  pipe = ITB.open(profile, blob)
+  pipe = ITB.load(blob)
   begin
     plain = if streaming_profile?(profile)
       stream_one_shot(pipe, :decrypt, wire)
@@ -98,7 +111,8 @@ end
 
 argv = ARGV
 known_shape =
-  (argv.length == 1 && %w[version hashes].include?(argv[0])) ||
+  (argv.length == 1 && %w[version profiles].include?(argv[0])) ||
+  (argv.length == 2 && argv[0] == "inspect") ||
   (argv.length == 4 && argv[0] == "encrypt") ||
   (argv.length == 5 && argv[0] == "decrypt")
 unless known_shape
@@ -112,7 +126,8 @@ begin
   ITB.set_gc_percent(20)
   case argv[0]
   when "version" then cmd_version
-  when "hashes" then cmd_hashes
+  when "profiles" then cmd_profiles
+  when "inspect" then cmd_inspect(argv[1])
   when "encrypt" then cmd_encrypt(argv[1], argv[2], argv[3])
   else cmd_decrypt(argv[1], argv[2], argv[3], argv[4])
   end

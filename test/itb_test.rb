@@ -6,11 +6,6 @@ require_relative "../lib/itb"
 # Surface parity checks for the Ruby binding; the deep suite lives in
 # Go under the shipped tree.
 class ItbTest < Minitest::Test
-  CANONICAL_HASHES = %w[
-    areion256 areion512 blake2b256 blake2b512 blake2s
-    blake3 aescmac siphash24 chacha20
-  ].freeze
-
   # Deterministic non-trivial payload (xorshift fill).
   def payload(n, seed)
     x = seed | 1
@@ -31,27 +26,25 @@ class ItbTest < Minitest::Test
     assert_match(/\A\d+\.\d+/, v)
   end
 
-  def test_hashes_canonical_order
-    hashes = ITB.hashes
-    assert_equal CANONICAL_HASHES, hashes.map(&:name)
-    hashes.each { |h| assert_operator h.width, :>=, 128 }
-  end
-
   def test_profiles_list
     profiles = ITB.profiles
     assert_includes profiles, "singlemsg-triple-mac-v1"
     assert_includes profiles, "streaming-noaead-triple-v1"
     # Every listed profile initialises on the Go side.
+    assert_equal profiles.sort, profiles
     profiles.each do |p|
       pipe = ITB.create(p)
-      refute_empty pipe.blob
+      refute_empty pipe.save
+      assert_equal p, ITB.lookup(p)["name"]
       pipe.free
     end
+    err = assert_raises(ITB::Error) { ITB.lookup("no-such-profile") }
+    assert_equal ITB::Status::UNKNOWN_PROFILE, err.status_code
   end
 
   def test_message_round_trip
     sender = ITB.create("singlemsg-triple-mac-v1")
-    receiver = ITB.open("singlemsg-triple-mac-v1", sender.blob)
+    receiver = ITB.load(sender.save)
     [4 * 1024, 256 * 1024].each do |size|
       plain = payload(size, size)
       wire = sender.encrypt_message(plain)
@@ -66,7 +59,7 @@ class ItbTest < Minitest::Test
 
   def test_stream_round_trip
     sender = ITB.create("streaming-noaead-triple-v1")
-    receiver = ITB.open("streaming-noaead-triple-v1", sender.blob)
+    receiver = ITB.load(sender.save)
     plain = payload(3 * 1024 * 1024 + 17, 42)
 
     wire = +""
@@ -97,7 +90,7 @@ class ItbTest < Minitest::Test
   def test_stream_pump_round_trip
     require "stringio"
     sender = ITB.create("streaming-aead-triple-mac-v1")
-    receiver = ITB.open("streaming-aead-triple-mac-v1", sender.blob)
+    receiver = ITB.load(sender.save)
     plain = payload(2 * 1024 * 1024 + 3, 7)
 
     wire_io = StringIO.new(+"", "wb")
@@ -111,15 +104,15 @@ class ItbTest < Minitest::Test
     receiver&.free
   end
 
-  def test_bad_profile_maps_to_bad_input
+  def test_bad_profile_maps_to_unknown_profile
     err = assert_raises(ITB::Error) { ITB.create("no-such-profile") }
-    assert_equal ITB::Status::BAD_INPUT, err.status_code
+    assert_equal ITB::Status::UNKNOWN_PROFILE, err.status_code
     refute_empty err.message
   end
 
   def test_tampered_wire_fails_decrypt
     sender = ITB.create("singlemsg-triple-mac-v1")
-    receiver = ITB.open("singlemsg-triple-mac-v1", sender.blob)
+    receiver = ITB.load(sender.save)
     wire = sender.encrypt_message(payload(8 * 1024, 3)).dup
     # XOR a 64-byte span so the corruption is guaranteed to hit data
     # bits (a single flipped bit can land in a noise-bit position the
@@ -147,7 +140,7 @@ class ItbTest < Minitest::Test
     # Pattern P1: the pre-allocated output buffer plus a single
     # retry gated on strict len > cap must cover a > 1 MiB payload.
     sender = ITB.create("singlemsg-triple-nomac-v1")
-    receiver = ITB.open("singlemsg-triple-nomac-v1", sender.blob)
+    receiver = ITB.load(sender.save)
     plain = payload((1 << 20) + 4321, 9)
     wire = sender.encrypt_message(plain)
     back = receiver.decrypt_message(wire)
@@ -160,10 +153,11 @@ class ItbTest < Minitest::Test
 
   def test_rekey_refreshes_blob
     sender = ITB.create("singlemsg-triple-mac-v1")
-    old_blob = sender.blob
-    sender.rekey("\x01".b * 32, "\x02".b * 32)
-    refute_equal old_blob, sender.blob
-    receiver = ITB.open("singlemsg-triple-mac-v1", sender.blob)
+    old_blob = sender.save
+    rotated = sender.rekey("\x01".b * 32, "\x02".b * 32)
+    refute_equal old_blob, rotated
+    assert_equal rotated, sender.save
+    receiver = ITB.load(rotated)
     wire = sender.encrypt_message("after rekey")
     assert_equal "after rekey", receiver.decrypt_message(wire)
   ensure
@@ -171,27 +165,109 @@ class ItbTest < Minitest::Test
     receiver&.free
   end
 
-  def test_register_profile_and_duplicate
+  def test_register_and_duplicate
     name = "ruby-binding-test-#{Process.pid}"
-    opts = {
+    profile = {
       "mode" => "singlemsg-nomac",
-      "width" => "256",
-      "innerHashes" => "blake3,blake2s,areion256,blake2b256,chacha20,blake3,blake2s,areion256",
-      "keyBits" => "1024",
-      "parallaxOn" => "false",
-      "wrapperOn" => "false"
+      "width" => 256,
+      "hashes" => %w[blake3 blake2s areion256 blake2b256 chacha20 blake3 blake2s areion256],
+      "keybits" => 1024,
+      "parallax" => false,
+      "wrapper" => false
     }
-    ITB.register_profile(name, opts)
+    ITB.register(name, profile)
+    assert_includes ITB.profiles, name
+    assert_equal profile["hashes"], ITB.lookup(name)["hashes"]
     sender = ITB.create(name)
-    receiver = ITB.open(name, sender.blob)
+    receiver = ITB.load(sender.save)
     wire = sender.encrypt_message("custom profile")
     assert_equal "custom profile", receiver.decrypt_message(wire)
 
-    err = assert_raises(ITB::Error) { ITB.register_profile(name, opts) }
+    err = assert_raises(ITB::Error) { ITB.register(name, profile) }
     assert_equal ITB::Status::PROFILE_EXISTS, err.status_code
+
+    # Strict record decode on the Go side -- an unknown key is
+    # rejected there, not by the binding.
+    err = assert_raises(ITB::Error) { ITB.register("#{name}-bad", { "mode" => "singlemsg-nomac", "bogus" => 1 }) }
+    assert_equal ITB::Status::BAD_INPUT, err.status_code
   ensure
     sender&.free
     receiver&.free
+  end
+
+  def test_save_load_round_trip
+    sender = ITB.create("singlemsg-triple-mac-v1")
+    blob = sender.save
+    refute_empty blob
+    assert_equal blob, sender.save
+    receiver = ITB.load(blob)
+    assert_equal blob, receiver.save
+    wire = sender.encrypt_message("in-memory persist")
+    assert_equal "in-memory persist", receiver.decrypt_message(wire)
+  ensure
+    sender&.free
+    receiver&.free
+  end
+
+  def test_save_f_load_f_round_trip
+    require "tmpdir"
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "session.blob")
+      sender = ITB.create("singlemsg-triple-mac-v1")
+      sender.save_f(path)
+      assert_equal 0o600, File.stat(path).mode & 0o777
+      receiver = ITB.load_f(path)
+      assert_equal sender.save, receiver.save
+      wire = sender.encrypt_message("file persist")
+      assert_equal "file persist", receiver.decrypt_message(wire)
+      err = assert_raises(ITB::Error) { ITB.load_f(File.join(dir, "absent.blob")) }
+      assert_equal ITB::Status::BAD_INPUT, err.status_code
+    ensure
+      sender&.free
+      receiver&.free
+    end
+  end
+
+  def test_load_with_master_override
+    sender = ITB.create("singlemsg-triple-mac-v1")
+    rotated = sender.rekey("\x31".b * 32, "\x32".b * 32)
+    receiver = ITB.load(sender.save, masters: ["\x31".b * 32, "\x32".b * 32])
+    assert_equal rotated, receiver.save
+    wire = sender.encrypt_message("master override")
+    assert_equal "master override", receiver.decrypt_message(wire)
+  ensure
+    sender&.free
+    receiver&.free
+  end
+
+  def test_inspect_blob_matches_lookup
+    pipe = ITB.create("singlemsg-triple-mac-v1")
+    record = ITB.inspect_blob(pipe.save)
+    assert_equal "singlemsg-triple-mac-v1", record["name"]
+    assert_equal "singlemsg-mac", record["mode"]
+    assert_equal ITB.lookup("singlemsg-triple-mac-v1"), record
+    err = assert_raises(ITB::Error) { ITB.inspect_blob("not a blob") }
+    assert_equal ITB::Status::BAD_INPUT, err.status_code
+  ensure
+    pipe&.free
+  end
+
+  def test_max_workers
+    pipe = ITB.create("singlemsg-triple-mac-v1")
+    pipe.max_workers(2)
+    pipe.max_workers(-1) # clamped to auto, never rejected
+    pipe.max_workers(10_000) # clamped to 256
+    wire = pipe.encrypt_message("after cap change")
+    assert_equal "after cap change", pipe.decrypt_message(wire)
+    pipe.close
+    err = assert_raises(ITB::Error) { pipe.max_workers(2) }
+    assert_equal ITB::Status::TRIPLE_CLOSED, err.status_code
+    # A negative init-time cap is clamped as well.
+    neg = ITB.create("singlemsg-triple-mac-v1", { "maxWorkers" => -1 })
+    assert_equal "negative cap", neg.decrypt_message(neg.encrypt_message("negative cap"))
+  ensure
+    pipe&.free
+    neg&.free
   end
 
   def test_runtime_knobs_report_previous_values
@@ -225,7 +301,7 @@ class ItbTest < Minitest::Test
 
   def test_message_into_round_trip
     sender = ITB.create("singlemsg-triple-nomac-v1")
-    receiver = ITB.open("singlemsg-triple-nomac-v1", sender.blob)
+    receiver = ITB.load(sender.save)
     plain = payload(64 * 1024, 5)
     cap = plain.bytesize + (plain.bytesize / 4) + 65_536
     wire_buf = FFI::MemoryPointer.new(:char, cap, false)
@@ -260,7 +336,7 @@ class ItbTest < Minitest::Test
 
   def test_read_into_partial_drains
     sender = ITB.create("streaming-noaead-triple-v1")
-    receiver = ITB.open("streaming-noaead-triple-v1", sender.blob)
+    receiver = ITB.load(sender.save)
     plain = payload(1024 * 1024 + 13, 21)
     small = FFI::MemoryPointer.new(:char, 4096, false)
 

@@ -16,6 +16,9 @@ module ITB
     SEED_WIDTH_MIX = 8
     BAD_MAC = 9
     MAC_FAILURE = 10
+    BLOB_MALFORMED_RECIPE = 11
+    RECIPE_PRIMITIVE_UNKNOWN = 12
+    UNKNOWN_PROFILE = 13
     BLOB_MODE_MISMATCH = 19
     BLOB_MALFORMED = 20
     BLOB_VERSION_TOO_NEW = 21
@@ -38,6 +41,10 @@ module ITB
       SEED_WIDTH_MIX => "seed width mismatch",
       BAD_MAC => "unknown MAC name or invalid MAC handle",
       MAC_FAILURE => "MAC verification failed",
+      BLOB_MALFORMED_RECIPE => "blob profile record invalid",
+      RECIPE_PRIMITIVE_UNKNOWN =>
+        "blob profile record names a primitive absent from the local registries",
+      UNKNOWN_PROFILE => "unknown profile name",
       BLOB_MODE_MISMATCH => "blob mode mismatch",
       BLOB_MALFORMED => "malformed state blob",
       BLOB_VERSION_TOO_NEW => "blob version too new",
