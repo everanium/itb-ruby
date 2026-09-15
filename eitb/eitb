@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+#
+# eitb -- launcher for the Ruby binding's CLI demonstrator. Resolves
+# the binding's lib/ directory relative to this script so the CLI runs
+# from any working directory.
+
+set -eu
+
+DIR="$(cd "$(dirname "$0")" && pwd)"
+exec ruby "$DIR/itb.rb" "$@"
