@@ -186,9 +186,9 @@ def bench_stream
   pipe.free
 end
 
-# Bench-scale allocation churn leaks Go scratch heap unboundedly
-# without a soft memory cap + aggressive GC; the return values report
-# the previous settings, not an error.
+# Bench-scale allocation churn grows the Go scratch heap
+# unboundedly without a soft memory cap + aggressive GC; the
+# return values report the previous settings, not an error.
 ITB.set_memory_limit(4 << 30)
 ITB.set_gc_percent(100)
 

@@ -13,10 +13,10 @@ resolved at load time. Every hash-name / MAC-name / cipher-name /
 profile-name is an opaque string passed through to Go for validation;
 the binding carries no ITB construction logic. The public surface is
 the `ITB` module (`create` / `load` / `load_f` / `inspect_blob` /
-`register` / `lookup` / `profiles` / `version` and the Go runtime
+`register` / `lookup` / `profiles` / `version` / `drbg_auto_tier` and the Go runtime
 knobs), the `Pipeline` class (Single Message encrypt /
-decrypt, save / save_f, rekey, max_workers, close, incremental stream
-sessions), and the `StreamEncryptor` / `StreamDecryptor` session
+decrypt, one-shot and incremental stream sessions, save / save_f,
+rekey, max_workers, close), and the `StreamEncryptor` / `StreamDecryptor` session
 classes.
 
 ## Prerequisites (Arch Linux)
@@ -48,7 +48,7 @@ go build -trimpath -buildmode=c-shared \
 
 The gem is loadable directly from `bindings/ruby/lib` (no build step —
 the `ffi` gem loads the shared library at load time); a local gem
-build is `gem build itb.gemspec`.
+build is `gem build libitb3.gemspec`.
 
 ## Library lookup order
 
@@ -101,6 +101,32 @@ rotated = sender.rekey("\x11".b * 32, "\x22".b * 32)
 receiver = ITB.load(rotated)
 ```
 
+`encrypt_stream` / `decrypt_stream` open incremental sessions
+exposing `write` / `end_stream` / `read` / `drain_all` for
+caller-driven loops, plus a `pump(src, dst)` helper that moves any
+readable IO into any writable one with bounded memory. With a block,
+the session is freed on return:
+
+```ruby
+pipe = ITB.create("streaming-noaead-triple-v1")
+wire = pipe.encrypt_stream do |enc|
+  enc.write(chunk_a)
+  enc.write(chunk_b)
+  enc.drain_all
+end
+```
+
+`Pipeline` and the stream sessions register GC finalizers, so
+un-freed handles are reclaimed eventually; explicit `free` (or the
+block form) releases the Go-side state deterministically. Stream
+sessions hold a reference to their parent `Pipeline`, so the parent
+cannot be garbage-collected while a session is live.
+
+Profile names, opts keys, and every primitive name are validated by
+the Go side; a rejected string raises `ITB::Error` carrying the
+status code (`status_code`, values in `ITB::Status`) plus the
+`ITB_LastError` diagnostic (`last_error`).
+
 ## Persisting sessions
 
 The blob is self-describing: it carries the profile record (mode,
@@ -130,6 +156,12 @@ same name before opening. Attempting to `load` such a blob through
 this binding raises `ITB::Error` with
 `ITB::Status::RECIPE_PRIMITIVE_UNKNOWN`.
 
+**Runtime tuning.** `Pipeline#max_workers(n)` sets the worker cap on
+a live Pipeline (`n <= 0` selects auto, values above 256 are
+clamped). The cap is per-machine tuning and is never written to the
+blob, so the receiver may pick its own worker cap after `load`. The
+`"maxWorkers"` opts key sets the same cap at `create`.
+
 ## Profile registry
 
 ```ruby
@@ -153,40 +185,6 @@ Every rule — name pattern, reserved prefixes, field constraints,
 primitive names — is enforced by libitb3; a duplicate name raises
 `ITB::Status::PROFILE_EXISTS`.
 
-## Runtime tuning
-
-`Pipeline#max_workers(n)` sets the worker cap on a live Pipeline
-(`n <= 0` selects auto, values above 256 are clamped). The cap is
-per-machine tuning and is never written to the blob, so the receiver
-may pick its own worker cap after `load`. The `"maxWorkers"` opts key
-sets the same cap at `create`.
-
-`encrypt_stream` / `decrypt_stream` open incremental sessions
-exposing `write` / `end_stream` / `read` / `drain_all` for
-caller-driven loops, plus a `pump(src, dst)` helper that moves any
-readable IO into any writable one with bounded memory. With a block,
-the session is freed on return:
-
-```ruby
-pipe = ITB.create("streaming-noaead-triple-v1")
-wire = pipe.encrypt_stream do |enc|
-  enc.write(chunk_a)
-  enc.write(chunk_b)
-  enc.drain_all
-end
-```
-
-`Pipeline` and the stream sessions register GC finalizers, so
-un-freed handles are reclaimed eventually; explicit `free` (or the
-block form) releases the Go-side state deterministically. Stream
-sessions hold a reference to their parent `Pipeline`, so the parent
-cannot be garbage-collected while a session is live.
-
-Profile names, opts keys, and every primitive name are validated by
-the Go side; a rejected string raises `ITB::Error` carrying the
-status code (`status_code`, values in `ITB::Status`) plus the
-`ITB_LastError` diagnostic (`last_error`).
-
 ## Memory
 
 Two process-wide knobs constrain Go runtime arena pacing, readable at
@@ -198,6 +196,14 @@ changing:
 ITB.set_memory_limit(4 << 30)
 ITB.set_gc_percent(100)
 ```
+
+Three further knobs sit on the same surface: `ITB.set_gomaxprocs(n)`
+(a value of zero or below queries), `ITB.write_heap_profile(path)` (a
+pprof heap profile after one forced collection) and `ITB.pool_stats`
+with its `ITB.pool_stats_len` companion, which returns the library's
+monotonic pool checkout / miss counters as an Array of Integer that
+a consumer differences between two snapshots. `ITB.hash_names`
+enumerates the shipped inner-hash registry next to `ITB.profiles`.
 
 ## Testing
 
@@ -220,12 +226,14 @@ suite lives in Go under the shipped tree.
 ./bindings/ruby/run_bench.sh
 ```
 
-Micro-benches: `encrypt_message` and stream-session encrypt
-throughput at 1 MiB / 16 MiB / 64 MiB. Shape and budget are driven by
-env vars (`ITB_PROFILE`, `ITB_INNER_HASH`, `ITB_KEY_BITS`,
-`ITB_NONCE_BITS`, `ITB_WITH_PARALLAX`, `ITB_WITH_WRAPPER`,
-`ITB_BENCH_MIN_SEC`); the script pins the same defaults as the root
-Go BENCH3.md table.
+Micro-benches: `encrypt_message`, stream-session encrypt and
+one-shot stream throughput at 1 MiB / 16 MiB / 64 MiB. Shape and
+budget are driven by env vars (`ITB_PROFILE`, `ITB_INNER_HASH`,
+`ITB_KEY_BITS`, `ITB_NONCE_BITS`, `ITB_WITH_PARALLAX`,
+`ITB_WITH_WRAPPER`, `ITB_BENCH_MIN_SEC`); the script pins the same
+defaults as the root Go BENCH3.md table. See
+[`bindings/BENCH.md`](https://github.com/everanium/itb/blob/main/bindings/BENCH.md)
+for the fleet-wide configuration authority and comparison tables.
 
 ## itb3 CLI
 
@@ -237,6 +245,28 @@ payloads directly on disk (`-i` / `-o`) or through stdin / stdout,
 rotates outer masters, and inspects stored blobs. See
 [`cmd/itb3/README.md`](https://github.com/everanium/itb/blob/main/cmd/itb3/README.md) for the full
 subcommand reference.
+
+## loop utility
+
+A long-run stress harness under `bindings/ruby/loop/` holds one
+Pipeline handle for minutes, cycles encrypt → decrypt → compare
+round-trips through it, rotates the outer masters and reopens the
+handle from its session blob on a schedule, and reports whether the
+process survived with every byte intact. It is the binding-side
+counterpart of the Go harness under `tools/loop`: same flags, same
+round structure, same summary in both renderings.
+
+```bash
+./bindings/ruby/build.sh
+./bindings/ruby/run_loop.sh --duration 2m --shape both
+```
+
+`./bindings/ruby/run_loop.sh -h` lists every flag. Concurrency mode:
+**shared-handle** — the ffi gem attaches every call that does
+non-trivial Go-side work with `blocking: true`, which releases the
+global VM lock for its duration, so worker threads call into one
+Pipeline handle concurrently and `--goroutines` is the thread count
+verbatim, never clamped.
 
 ## eitb utility
 

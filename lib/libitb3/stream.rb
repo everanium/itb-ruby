@@ -27,10 +27,14 @@ module ITB
       handle_ptr = FFI::MemoryPointer.new(:size_t)
       FFIBridge.check(FFIBridge.public_send(self.class::BEGIN_SYM, pipe_handle, handle_ptr))
       @handle_box = [handle_ptr.read(:size_t)]
-      # Persistent drain-side scratch: one uncleared native buffer
-      # plus the two out-params, reused across every #read /
-      # #read_into call. A fresh zero-filled MemoryPointer per drain
-      # call dominates large pump loops.
+      # Drain-side state held for the session's lifetime: one
+      # uncleared native buffer (libitb3 writes the first +n+ bytes
+      # and only those are read back) plus the two out-params, reused
+      # across every #read / #read_into call and released by #free.
+      # A session is single-threaded by contract, so the reuse
+      # serialises nothing, and a drain loop reads one slice per
+      # PUMP_BUF of output, so a fresh allocation per slice would
+      # cost a few percent of the pump.
       @out_ptr = FFI::MemoryPointer.new(:char, PUMP_BUF, false)
       @need = FFI::MemoryPointer.new(:size_t)
       @fin = FFI::MemoryPointer.new(:int)
@@ -62,9 +66,10 @@ module ITB
     # #end_stream, an empty-spool read blocks until the terminal bytes
     # arrive or the session errors.
     def read(max_bytes = PUMP_BUF)
-      buf = max_bytes <= @out_ptr.size ? @out_ptr : FFI::MemoryPointer.new(:char, max_bytes, false)
-      n, finished = read_into(buf, max_bytes)
-      [buf.read_bytes(n), finished]
+      drain_buf(max_bytes) do |buf|
+        n, finished = read_into(buf, max_bytes)
+        [buf.read_bytes(n), finished]
+      end
     end
 
     # Allocation-free drain primitive: fills up to +cap+ bytes of the
@@ -88,10 +93,12 @@ module ITB
     def drain_all
       end_stream unless @ended
       out = +""
-      loop do
-        n, finished = read_into(@out_ptr)
-        out << @out_ptr.read_bytes(n) if n.positive?
-        return out if finished
+      drain_buf(PUMP_BUF) do |buf|
+        loop do
+          n, finished = read_into(buf)
+          out << buf.read_bytes(n) if n.positive?
+          return out if finished
+        end
       end
     end
 
@@ -100,37 +107,44 @@ module ITB
     # bounded memory: feed a slice, drain available output, repeat;
     # end + final drain on source EOF.
     def pump(src, dst)
-      while (piece = src.read(PUMP_BUF))
-        break if piece.empty?
+      drain_buf(PUMP_BUF) do |buf|
+        while (piece = src.read(PUMP_BUF))
+          break if piece.empty?
 
-        write(piece)
-        # Drain whatever the chain has produced so far; a read before
-        # end_stream never blocks.
-        loop do
-          n, = read_into(@out_ptr)
-          break if n.zero?
+          write(piece)
+          # Drain whatever the chain has produced so far; a read before
+          # end_stream never blocks.
+          loop do
+            n, = read_into(buf)
+            break if n.zero?
 
-          dst.write(@out_ptr.read_bytes(n))
+            dst.write(buf.read_bytes(n))
+          end
         end
-      end
-      end_stream
-      loop do
-        n, finished = read_into(@out_ptr)
-        dst.write(@out_ptr.read_bytes(n)) if n.positive?
-        break if finished
+        end_stream
+        loop do
+          n, finished = read_into(buf)
+          dst.write(buf.read_bytes(n)) if n.positive?
+          break if finished
+        end
       end
       dst.flush if dst.respond_to?(:flush)
       nil
     end
 
-    # Cancels (if still running) and releases the session. Safe to
-    # call from any state and more than once.
+    # Cancels (if still running) and releases the session: the
+    # Go-side state first, then the session-held drain buffer. Safe to
+    # call from any state and more than once; a drain after it fails
+    # on the released handle like every other post-free call.
     def free
       h = @handle_box[0]
       return if h.zero?
 
       @handle_box[0] = 0
       FFIBridge.ITB_Triple_StreamFree(h)
+      held = @out_ptr
+      @out_ptr = nil
+      held&.free
       nil
     end
 
@@ -149,15 +163,31 @@ module ITB
     def handle
       @handle_box[0]
     end
+
+    # Yields the drain buffer for one call: the session-held one when
+    # it is live and holds +cap+ bytes, otherwise an uncleared
+    # temporary released on return -- for a +cap+ above PUMP_BUF, or
+    # for a call after #free, which then fails on the released handle.
+    def drain_buf(cap)
+      held = @out_ptr
+      return yield(held) if held && cap <= held.size
+
+      buf = FFI::MemoryPointer.new(:char, cap, false)
+      begin
+        yield buf
+      ensure
+        buf.free
+      end
+    end
   end
 
   # Incremental encrypt session: plaintext in, wire out.
   #
   # Stream sessions are single-threaded: the drain out-params and the
-  # pooled drain buffer are per-session state shared across calls, so
-  # concurrent access to one session from multiple Ruby threads is
-  # undefined behaviour. Use one session per thread, or serialise
-  # access externally.
+  # session-held drain buffer are per-session state shared across
+  # calls, so concurrent access to one session from multiple Ruby
+  # threads is undefined behaviour. Use one session per thread, or
+  # serialise access externally.
   class StreamEncryptor < StreamSession
     BEGIN_SYM = :ITB_Triple_EncryptStreamBegin
   end
@@ -165,10 +195,10 @@ module ITB
   # Incremental decrypt session: wire in, plaintext out.
   #
   # Stream sessions are single-threaded: the drain out-params and the
-  # pooled drain buffer are per-session state shared across calls, so
-  # concurrent access to one session from multiple Ruby threads is
-  # undefined behaviour. Use one session per thread, or serialise
-  # access externally.
+  # session-held drain buffer are per-session state shared across
+  # calls, so concurrent access to one session from multiple Ruby
+  # threads is undefined behaviour. Use one session per thread, or
+  # serialise access externally.
   class StreamDecryptor < StreamSession
     BEGIN_SYM = :ITB_Triple_DecryptStreamBegin
   end

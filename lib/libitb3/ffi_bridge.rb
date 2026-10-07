@@ -54,7 +54,7 @@ module ITB
       cands = []
       env = ENV["ITB_LIBITB3_PATH"].to_s
       cands << env unless env.empty?
-      # lib/itb/ffi_bridge.rb -> repo root is four levels up.
+      # lib/libitb3/ffi_bridge.rb -> repo root is four levels up.
       repo = File.expand_path("../../../..", __dir__)
       in_repo = File.join(repo, "dist", dist_subdir, lib_filename)
       cands << in_repo if File.file?(in_repo)
@@ -71,9 +71,14 @@ module ITB
 
     # -- Library / runtime surface --------------------------------------
     attach_function :ITB_Version, [:buffer_out, :size_t, :pointer], :int
+    attach_function :ITB_DRBGAutoTier, [:buffer_out, :size_t, :pointer], :int
     attach_function :ITB_LastError, [:buffer_out, :size_t, :pointer], :int
     attach_function :ITB_SetMemoryLimit, [:int64], :int64
     attach_function :ITB_SetGCPercent, [:int], :int
+    attach_function :ITB_SetGOMAXPROCS, [:int], :int
+    attach_function :ITB_WriteHeapProfile, [:string], :int
+    attach_function :ITB_PoolStatsLen, [], :int
+    attach_function :ITB_PoolStats, [:pointer, :size_t, :pointer], :int
 
     # -- Triple Pipeline surface ----------------------------------------
     attach_function :ITB_Triple_Init,
@@ -115,6 +120,7 @@ module ITB
     attach_function :ITB_Triple_Lookup,
                     [:string, :buffer_out, :size_t, :pointer], :int
     attach_function :ITB_Triple_Profiles, [:buffer_out, :size_t, :pointer], :int
+    attach_function :ITB_Triple_HashNames, [:buffer_out, :size_t, :pointer], :int
     attach_function :ITB_Triple_EncryptStreamBegin, [:size_t, :pointer], :int
     attach_function :ITB_Triple_DecryptStreamBegin, [:size_t, :pointer], :int
     attach_function :ITB_Triple_StreamWrite,

@@ -28,39 +28,6 @@ module ITB
     TRIPLE_CLOSED = 25
     PROFILE_EXISTS = 26
     INTERNAL = 99
-
-    LABELS = {
-      OK => "ok",
-      BAD_HASH => "unknown hash name",
-      BAD_KEY_BITS => "invalid key bits",
-      BAD_HANDLE => "invalid handle",
-      BAD_INPUT => "invalid input",
-      BUFFER_TOO_SMALL => "output buffer too small",
-      ENCRYPT_FAILED => "encrypt failed",
-      DECRYPT_FAILED => "decrypt failed",
-      SEED_WIDTH_MIX => "seed width mismatch",
-      BAD_MAC => "unknown MAC name or invalid MAC handle",
-      MAC_FAILURE => "MAC verification failed",
-      BLOB_MALFORMED_RECIPE => "blob profile record invalid",
-      RECIPE_PRIMITIVE_UNKNOWN =>
-        "blob profile record names a primitive absent from the local registries",
-      UNKNOWN_PROFILE => "unknown profile name",
-      BLOB_MODE_MISMATCH => "blob mode mismatch",
-      BLOB_MALFORMED => "malformed state blob",
-      BLOB_VERSION_TOO_NEW => "blob version too new",
-      BLOB_TOO_MANY_OPTS => "too many blob export opts",
-      STREAM_TRUNCATED => "stream truncated before terminator",
-      STREAM_AFTER_FINAL => "stream chunk after terminator",
-      TRIPLE_CLOSED => "Triple Pipeline is closed",
-      PROFILE_EXISTS => "profile name already registered",
-      INTERNAL => "internal error"
-    }.freeze
-
-    # Short human-readable label for a status code; unknown codes
-    # collapse to "unknown status".
-    def self.label(code)
-      LABELS.fetch(code, "unknown status")
-    end
   end
 
   # Raised on every failed libitb3 call.
@@ -78,15 +45,7 @@ module ITB
     def initialize(message, status_code = nil)
       @status_code = status_code
       @last_error = message.to_s
-      text =
-        if status_code.nil?
-          "itb: #{@last_error}"
-        elsif @last_error.empty?
-          "itb: status=#{status_code} (#{Status.label(status_code)})"
-        else
-          "itb: status=#{status_code} (#{Status.label(status_code)}): #{@last_error}"
-        end
-      super(text)
+      super(status_code.nil? ? "itb: #{@last_error}" : "itb: status=#{status_code}: #{@last_error}")
     end
   end
 end

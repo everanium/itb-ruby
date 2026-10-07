@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 #
-# run_tests.sh -- one-step test runner for the Ruby binding. Builds
-# libitb3.so via build.sh, points ITB_LIBITB3_PATH at the freshly-built
-# shared library, then runs the Minitest suite. Positional arguments
-# are forwarded to Minitest (e.g. a single test via
-# `./run_tests.sh -n test_message_round_trip`).
+# One-step test runner for the Ruby binding. Builds libitb3.so via
+# build.sh, points ITB_LIBITB3_PATH at the freshly-built shared
+# library, then runs the Minitest suite. Positional arguments are
+# forwarded to Minitest (e.g. a single test via `./run_tests.sh -n
+# test_message_round_trip`).
 #
 # Usage:
 #   ./run_tests.sh                             # full suite

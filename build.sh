@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
-# build.sh -- one-step build for the Ruby binding's libitb3.so
-# dependency. Prerequisites (Go, Ruby 2.7+, the ffi gem) must be
-# installed separately; see README.md "Prerequisites" section.
+# One-step build for the Ruby binding's libitb3.so dependency.
+# Prerequisites (Go, Ruby 2.7+, the ffi gem) must be installed
+# separately; see README.md "Prerequisites" section.
 #
 # Every artefact this binding owns is removed before the build, so
 # nothing in the tree predates the invocation.
@@ -120,8 +120,8 @@ go build -trimpath "${TAGS[@]}" -buildmode=c-shared \
     -o dist/linux-amd64/libitb3.so ./cmd/cshared
 
 cd "$REPO_ROOT/bindings/ruby"
-echo "==> syntax-checking the itb gem sources, the tests, the bench and eitb"
-for f in lib/libitb3.rb lib/libitb3/*.rb test/*.rb bench/*.rb eitb/itb.rb; do
+echo "==> syntax-checking the itb gem sources, the tests, the bench, eitb and loop"
+for f in lib/libitb3.rb lib/libitb3/*.rb test/*.rb bench/*.rb eitb/itb.rb loop/*.rb; do
     if [[ ! -f "$f" ]]; then
         echo "build.sh: expected source '$f' is missing" >&2
         exit 1

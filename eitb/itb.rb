@@ -1,13 +1,13 @@
 # frozen_string_literal: true
 
-# eitb -- command-line demonstrator for the ITB Ruby binding.
+# Command-line demonstrator for the ITB Ruby binding.
 #
 # Subcommands:
 #
-#   itb.rb version                                   library + binding versions
-#   itb.rb profiles                                  registered profile catalogue
-#   itb.rb inspect <blob-hex>                        profile record of a blob
-#   itb.rb encrypt <profile> <in-file> <out-file>    Single Message encrypt
+#   itb.rb version
+#   itb.rb profiles
+#   itb.rb inspect <blob-hex>
+#   itb.rb encrypt <profile> <in-file> <out-file>
 #   itb.rb decrypt <profile> <blob-hex> <in-file> <out-file>
 #
 # encrypt prints the session blob (Pipeline#save) to stderr as hex;
@@ -15,7 +15,8 @@
 # the session with ITB.load (the profile argument only routes Single
 # Message versus streaming). profiles lists the registered profile
 # catalogue one name per line; the profiles that carry a cipher
-# surface are the ones encrypt / decrypt accept.
+# surface are the ones encrypt / decrypt accept. inspect prints the
+# profile record a blob carries.
 
 $LOAD_PATH.unshift(File.expand_path("../lib", __dir__))
 require "fileutils"
@@ -23,11 +24,11 @@ require "json"
 require "libitb3"
 
 USAGE = <<~TEXT
-  usage: itb.rb version
-         itb.rb profiles
-         itb.rb inspect <blob-hex>
-         itb.rb encrypt <profile> <in-file> <out-file>
-         itb.rb decrypt <profile> <blob-hex> <in-file> <out-file>
+  usage: eitb version
+         eitb profiles
+         eitb inspect <blob-hex>
+         eitb encrypt <profile> <in-file> <out-file>
+         eitb decrypt <profile> <blob-hex> <in-file> <out-file>
 TEXT
 
 def cmd_version

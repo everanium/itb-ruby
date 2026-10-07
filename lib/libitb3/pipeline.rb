@@ -13,6 +13,11 @@ module ITB
   # Streaming-decrypt caveat: chunked Streaming AEAD verifies per
   # chunk, so plaintext of verified chunks is released before a later
   # chunk can fail authentication.
+  #
+  # Cipher calls hold no per-Pipeline buffer state, so several threads
+  # may issue them on one Pipeline concurrently; the blocking FFI calls
+  # release the GVL and overlap inside libitb3. #rekey, #close and
+  # #free are the exceptions (see #rekey).
   class Pipeline
     # Floor capacity for blob output buffers (Init / Save / Rekey).
     BLOB_CAP = 64 * 1024
@@ -23,11 +28,6 @@ module ITB
       # The one-element box is shared with the finalizer proc so the
       # proc does not capture self (which would defeat GC).
       @handle_box = [handle]
-      # Serialises access to the pooled Message scratch buffer; the
-      # blocking FFI calls release the GVL, so concurrent
-      # encrypt_message / decrypt_message on one Pipeline would
-      # otherwise share the buffer mid-flight.
-      @cipher_lock = Mutex.new
       ObjectSpace.define_finalizer(self, self.class.finalizer(@handle_box))
     end
 
@@ -149,8 +149,8 @@ module ITB
     # across calls) and returns the wire byte count. Raises
     # ITB::Error with Status::BUFFER_TOO_SMALL when +cap+ is
     # insufficient; the pre-allocation formula
-    # payload * 5/4 + 65536 typically suffices for large payloads,
-    # but small payloads may still expand past it -- on
+    # payload * 5/4 + 131072 covers the Message wire at every key
+    # size, nonce width and barrier fill -- on
     # BUFFER_TOO_SMALL the caller re-issues with a larger +dst+ or
     # falls back to #encrypt_message (the String-returning variant,
     # whose retry path absorbs the expansion). Raises ArgumentError
@@ -212,10 +212,6 @@ module ITB
       return if h.zero?
 
       @handle_box[0] = 0
-      @cipher_lock.synchronize do
-        @scratch&.free
-        @scratch = nil
-      end
       FFIBridge.ITB_Triple_Free(h)
       nil
     end
@@ -257,45 +253,47 @@ module ITB
     end
 
     # Pre-allocation formula for Message output buffers:
-    # max(65536, payload * 5/4 + 65536).
+    # max(131072, payload * 5/4 + 131072).
     def out_cap(payload)
-      payload + (payload / 4) + 65_536
+      payload + (payload / 4) + 131_072
     end
 
-    # Grow-only pooled native scratch for Message output buffers,
-    # reused across calls under @cipher_lock. Uncleared on purpose:
-    # libitb3 writes the first +need+ bytes and only those are read
-    # back. A fresh zero-filled MemoryPointer per call costs an
-    # mmap + memset of ~1.25x the payload every Message, which
-    # dominates large-payload throughput.
-    def scratch(cap)
-      cur = @scratch
-      return cur if cur && cur.size >= cap
-
-      cur&.free
-      @scratch = FFI::MemoryPointer.new(:char, cap, false)
+    # Uncleared native output buffer for one Message call: libitb3
+    # writes the first +need+ bytes and only those are read back, so
+    # the zero fill a default MemoryPointer performs would touch every
+    # page for nothing. The allocation itself is an mmap or a heap
+    # carve, well under the cipher's own cost at every payload size;
+    # the caller releases it as soon as the bytes are copied out, so
+    # nothing outlives the call and no lock is needed around it. A
+    # caller that wants to amortise even that holds its own buffer
+    # through #encrypt_message_into / #decrypt_message_into.
+    def out_buf(cap)
+      FFI::MemoryPointer.new(:char, cap, false)
     end
 
     # Shared body for the buffer-in / buffer-out cipher entries.
     # Retry-once discipline matches FFIBridge.retry_once: on
     # BUFFER_TOO_SMALL with a reported length strictly above the
-    # current capacity, the scratch grows to the exact size and the
-    # call re-runs once.
+    # current capacity, a buffer of the exact size replaces the first
+    # and the call re-runs once.
     def cipher(sym, src)
       src_b = FFIBridge.as_bytes(src)
       h = handle
-      @cipher_lock.synchronize do
-        buf = scratch(out_cap(src_b.bytesize))
-        need = (@need ||= FFI::MemoryPointer.new(:size_t))
+      need = FFI::MemoryPointer.new(:size_t)
+      buf = out_buf(out_cap(src_b.bytesize))
+      begin
         rc = FFIBridge.public_send(sym, h, src_b, src_b.bytesize, buf, buf.size, need)
         n = need.read(:size_t)
         if rc == Status::BUFFER_TOO_SMALL && n > buf.size
-          buf = scratch(n)
+          buf.free
+          buf = out_buf(n)
           rc = FFIBridge.public_send(sym, h, src_b, src_b.bytesize, buf, buf.size, need)
           n = need.read(:size_t)
         end
         FFIBridge.check(rc)
         buf.read_bytes(n)
+      ensure
+        buf.free
       end
     end
 
@@ -307,12 +305,9 @@ module ITB
       raise ArgumentError, "cap #{cap} exceeds buffer size #{dst.size}" if cap > dst.size
 
       src_b = FFIBridge.as_bytes(src)
-      h = handle
-      @cipher_lock.synchronize do
-        need = (@need ||= FFI::MemoryPointer.new(:size_t))
-        FFIBridge.check(FFIBridge.public_send(sym, h, src_b, src_b.bytesize, dst, cap, need))
-        need.read(:size_t)
-      end
+      need = FFI::MemoryPointer.new(:size_t)
+      FFIBridge.check(FFIBridge.public_send(sym, handle, src_b, src_b.bytesize, dst, cap, need))
+      need.read(:size_t)
     end
   end
 end

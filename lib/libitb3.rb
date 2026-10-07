@@ -94,6 +94,15 @@ module ITB
       end
     end
 
+    # The shipped inner-hash registry as an Array of primitive names, in
+    # registry order. Runtime-registered custom primitives are not part
+    # of this enumeration.
+    def hash_names
+      json_out do |buf, cap, need|
+        FFIBridge.ITB_Triple_HashNames(buf, cap, need)
+      end
+    end
+
     # Returns the libitb3 library version string.
     def version
       need = FFI::MemoryPointer.new(:size_t)
@@ -109,6 +118,23 @@ module ITB
       buf.read_bytes([need.read(:size_t) - 1, 0].max).force_encoding(Encoding::UTF_8)
     end
 
+    # Returns the fill cipher the auto DRBG tier selected on this host
+    # ("aes-256-ctr" or "chacha20"): the tier a Pipeline uses when its
+    # drbg option is empty, resolved per host and recorded in no blob.
+    def drbg_auto_tier
+      need = FFI::MemoryPointer.new(:size_t)
+      rc = FFIBridge.ITB_DRBGAutoTier(nil, 0, need)
+      unless [Status::OK, Status::BUFFER_TOO_SMALL].include?(rc)
+        raise Error.new(FFIBridge.last_error, rc)
+      end
+      n = need.read(:size_t)
+      return "" if n <= 1
+
+      buf = FFI::MemoryPointer.new(n)
+      FFIBridge.check(FFIBridge.ITB_DRBGAutoTier(buf, n, need))
+      buf.read_bytes([need.read(:size_t) - 1, 0].max).force_encoding(Encoding::UTF_8)
+    end
+
     # Sets the Go runtime's soft heap limit in bytes and returns the
     # previous limit. A negative value queries without changing.
     def set_memory_limit(limit_bytes)
@@ -119,6 +145,55 @@ module ITB
     # value. A negative value queries without changing.
     def set_gc_percent(pct)
       FFIBridge.ITB_SetGCPercent(pct)
+    end
+
+    # Sets the Go runtime's GOMAXPROCS -- the number of OS threads
+    # executing Go code simultaneously inside the library -- and returns
+    # the previous value. A value of zero or below queries without
+    # changing.
+    def set_gomaxprocs(n)
+      FFIBridge.ITB_SetGOMAXPROCS(n)
+    end
+
+    # Writes a Go runtime heap profile (pprof format, readable with
+    # `go tool pprof`) to +path+ after one forced garbage collection. An
+    # empty path falls back to the ITB_MEMPROFILE environment variable;
+    # a file-system failure raises ITB::Error carrying the OS
+    # diagnostic.
+    def write_heap_profile(path)
+      FFIBridge.check(FFIBridge.ITB_WriteHeapProfile(path.to_s))
+      nil
+    end
+
+    # The number of int64 slots #pool_stats fills. A caller sizes its
+    # buffer from this value rather than a constant: the slot count
+    # grows if the library adds a pool.
+    def pool_stats_len
+      FFIBridge.ITB_PoolStatsLen
+    end
+
+    # The library's pool hit / miss counters as an Array of Integer,
+    # every one a monotonically increasing total since library load (a
+    # consumer differences two snapshots).
+    #
+    # Slot layout, with +T+ the hash-array pool tier count in slot 0:
+    # for tier +i+ the five slots at <tt>1 + 5*i</tt> hold the starter
+    # width (0 for an unused tier), checkouts, constructor misses,
+    # regrow replacements and bytes allocated by misses + regrows; the
+    # four slots at <tt>1 + 5*T</tt> hold the scratch byte pool's
+    # get / new / regrow / regrow-bytes and the four after them the
+    # parallax chunk pool's, in the same order.
+    def pool_stats
+      cap = FFIBridge.ITB_PoolStatsLen
+      return [] if cap <= 0
+
+      # The capacity this entry takes is counted in int64 slots, not in
+      # bytes, so the buffer is allocated by element count and the same
+      # count is handed over.
+      buf = FFI::MemoryPointer.new(:int64, cap)
+      need = FFI::MemoryPointer.new(:size_t)
+      FFIBridge.check(FFIBridge.ITB_PoolStats(buf, cap, need))
+      buf.read_array_of_int64([need.read(:size_t), cap].min)
     end
 
     private
