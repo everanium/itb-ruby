@@ -255,12 +255,22 @@ class ItbTest < Minitest::Test
     assert_equal "singlemsg-mac", record["mode"]
     assert_includes record, "nonce_bits"
     assert_includes record, "barrier_fill"
+    assert_equal 1, record["container_mode"]
     looked = ITB.lookup("singlemsg-triple-mac-v1")
     refute_includes looked, "nonce_bits"
     refute_includes looked, "barrier_fill"
+    refute_includes looked, "container_mode"
     assert_equal looked, record.reject { |k, _| %w[nonce_bits barrier_fill container_mode].include?(k) }
     err = assert_raises(ITB::Error) { ITB.inspect_blob("not a blob") }
     assert_equal ITB::Status::BAD_INPUT, err.status_code
+  ensure
+    pipe&.free
+  end
+
+  def test_inspect_opts_mode
+    pipe = ITB.create("singlemsg-triple-mac-v1", { "mode" => 2 })
+    record = ITB.inspect_blob(pipe.save)
+    assert_equal 2, record["container_mode"]
   ensure
     pipe&.free
   end

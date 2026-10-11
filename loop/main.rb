@@ -511,20 +511,6 @@ module Loop
       )
     end
 
-    # Returns a copy of a wrap-layer session blob whose inner blob's
-    # "mode" field is set to target_mode (1 = per-region, 2 =
-    # per-container). The wrap layer's profile record carries its own
-    # "mode" (a string); the target is the inner blob's ("ib") integer
-    # field. Raises ArgumentError when the blob carries no inner blob
-    # mode field, JSON::ParserError when it is not JSON.
-    def edit_inner_blob_mode(blob, target_mode)
-      doc = JSON.parse(blob.dup.force_encoding(Encoding::UTF_8))
-      inner = doc.is_a?(Hash) ? doc["ib"] : nil
-      raise ArgumentError, "inner blob mode field not found" unless inner.is_a?(Hash) && inner.key?("mode")
-
-      inner["mode"] = target_mode
-      JSON.generate(doc)
-    end
 
     # Folds a keystream primitive into opts for any layer the named
     # profile leaves unfilled but the operator asked for.
@@ -575,6 +561,7 @@ module Loop
     # reopens use the retained blob; save is never called again.
     def build_pipeline(cfg, profile)
       opts = {
+        "mode" => cfg.blob_mode.to_s,
         "innerHash" => cfg.hash,
         "macName" => cfg.mac,
         "withParallax" => cfg.parallax ? "true" : "false",
@@ -606,26 +593,6 @@ module Loop
         err("Save(#{profile}): #{Loop.status_detail(e)}")
         pipe.free
         return nil
-      end
-      if cfg.blob_mode == 2
-        # The sizing mode is not an Opts knob: the Init blob is edited
-        # and the pipeline reopened from it, so the retained blob (the
-        # one blob-cycle reopens from) carries the edited mode.
-        begin
-          edited = edit_inner_blob_mode(blob, 2)
-        rescue ArgumentError, JSON::ParserError => e
-          err("rewrite blob mode: #{e.message}")
-          pipe.free
-          return nil
-        end
-        pipe.free
-        begin
-          pipe = ITB.load(edited)
-        rescue ITB::Error => e
-          err("reload Mode 2 blob: #{Loop.status_detail(e)}")
-          return nil
-        end
-        blob = edited
       end
       log_pipeline_initialised(profile, blob)
       [pipe, blob]

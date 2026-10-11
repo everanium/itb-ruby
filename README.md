@@ -86,7 +86,7 @@ cap) as a hash. The resolved shape is written into the blob, so the
 receiver loads it with no opts of its own:
 
 ```ruby
-opts = { "chunkSize" => 65536, "withWrapper" => false }
+opts = { "mode" => 2, "chunkSize" => 65536, "withWrapper" => false }
 sender = ITB.create("singlemsg-triple-mac-v1", opts)
 receiver = ITB.load(sender.save)
 ```
