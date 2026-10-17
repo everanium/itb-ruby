@@ -245,6 +245,29 @@ class ItbTest < Minitest::Test
     receiver&.free
   end
 
+  def test_create_keys_determinism_and_errors
+    opts = { "withParallax" => false, "withWrapper" => false }
+    masters = (0...8).map { |i| ((0x11 * (i + 1)).chr * 32).b }
+    p1 = ITB.create_keys("singlemsg-triple-mac-v1", masters, opts)
+    p2 = ITB.create_keys("singlemsg-triple-mac-v1", masters, opts)
+    assert_equal p1.save, p2.save
+    wire = p1.encrypt_message("deterministic keys")
+    assert_equal "deterministic keys", p2.decrypt_message(wire)
+
+    dup = masters.dup
+    dup[7] = dup[0]
+    err = assert_raises(ITB::Error) { ITB.create_keys("singlemsg-triple-mac-v1", dup, opts) }
+    assert_equal ITB::Status::BAD_INPUT, err.status_code
+
+    short = masters.dup
+    short[0] = "\xAA".b * 8
+    err2 = assert_raises(ITB::Error) { ITB.create_keys("singlemsg-triple-mac-v1", short, opts) }
+    assert_equal ITB::Status::BAD_INPUT, err2.status_code
+  ensure
+    p1&.free
+    p2&.free
+  end
+
   def test_inspect_blob_matches_lookup
     # inspect_blob carries the registry recipe plus the blob-only
     # nonce_bits / barrier_fill inspection fields; lookup returns just

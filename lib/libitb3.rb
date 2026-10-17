@@ -39,6 +39,13 @@ module ITB
     end
     alias init create
 
+    # Constructs a Pipeline against the named profile from caller-supplied
+    # master keys.
+    def create_keys(profile, masters, opts = nil)
+      Pipeline.init_keys(profile, masters, opts)
+    end
+    alias init_keys create_keys
+
     # Reconstructs a Pipeline from a blob produced by Pipeline#save or
     # Pipeline#rekey. The blob's embedded profile record is the sole
     # structural source -- no profile name, no opts. +masters+ is nil

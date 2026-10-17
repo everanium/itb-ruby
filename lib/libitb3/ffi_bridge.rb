@@ -84,6 +84,10 @@ module ITB
     attach_function :ITB_Triple_Init,
                     [:string, :string, :buffer_out, :size_t, :pointer, :pointer],
                     :int, blocking: true
+    attach_function :ITB_Triple_InitKeys,
+                    [:string, :string, :pointer, :size_t, :pointer, :size_t,
+                     :buffer_out, :size_t, :pointer, :pointer],
+                    :int, blocking: true
     attach_function :ITB_Triple_Load,
                     [:buffer_in, :size_t,
                      :buffer_in, :size_t, :buffer_in, :size_t, :size_t, :pointer],

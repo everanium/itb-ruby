@@ -46,6 +46,44 @@ module ITB
       new(handle_ptr.read(:size_t))
     end
 
+    # Constructs a session against the named profile from caller-supplied
+    # master keys (ITB_Triple_InitKeys). +masters+ is an Array of binary
+    # Strings forwarded directly to the library for validation.
+    def self.init_keys(profile, masters, opts = nil)
+      opts_s = render_opts(opts)
+      raw_list = (masters || []).map { |m| FFIBridge.as_bytes(m) }
+      count = raw_list.length
+      lens = raw_list.map(&:bytesize)
+      total_len = lens.sum
+
+      flat_ptr = total_len.positive? ? FFI::MemoryPointer.new(:uint8, total_len) : nil
+      lens_ptr = count.positive? ? FFI::MemoryPointer.new(:size_t, count) : nil
+      begin
+        lens.each_with_index { |l, i| lens_ptr[i].write(:size_t, l) }
+        off = 0
+        raw_list.each do |b|
+          unless b.empty?
+            flat_ptr.put_bytes(off, b)
+            off += b.bytesize
+          end
+        end
+
+        handle_ptr = FFI::MemoryPointer.new(:size_t)
+        FFIBridge.retry_once(BLOB_CAP) do |buf, cap, need|
+          FFIBridge.ITB_Triple_InitKeys(
+            profile, opts_s, flat_ptr, total_len, lens_ptr, count, buf, cap, need, handle_ptr
+          )
+        end
+        new(handle_ptr.read(:size_t))
+      ensure
+        flat_ptr&.clear
+      end
+    end
+
+    class << self
+      alias create_keys init_keys
+    end
+
     # Reconstructs a session from a blob produced by #save or #rekey
     # (ITB_Triple_Load). The blob's embedded profile record is the
     # sole structural source -- no profile name, no opts. +masters+ is
