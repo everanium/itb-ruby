@@ -40,7 +40,7 @@ module ITB
     def self.init(profile, opts = nil)
       opts_s = render_opts(opts)
       handle_ptr = FFI::MemoryPointer.new(:size_t)
-      FFIBridge.retry_once(BLOB_CAP) do |buf, cap, need|
+      FFIBridge.retry_once(BLOB_CAP, discard: true) do |buf, cap, need|
         FFIBridge.ITB_Triple_Init(profile, opts_s, buf, cap, need, handle_ptr)
       end
       new(handle_ptr.read(:size_t))
@@ -69,7 +69,7 @@ module ITB
         end
 
         handle_ptr = FFI::MemoryPointer.new(:size_t)
-        FFIBridge.retry_once(BLOB_CAP) do |buf, cap, need|
+        FFIBridge.retry_once(BLOB_CAP, discard: true) do |buf, cap, need|
           FFIBridge.ITB_Triple_InitKeys(
             profile, opts_s, flat_ptr, total_len, lens_ptr, count, buf, cap, need, handle_ptr
           )

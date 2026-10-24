@@ -163,18 +163,23 @@ module ITB
     # retry once with the exact size the FFI reported through the
     # length out-param. The retry is gated on the reported length
     # strictly exceeding the current capacity.
-    def self.retry_once(cap)
+    def self.retry_once(cap, discard: false)
       buf = FFI::MemoryPointer.new(cap)
       need = FFI::MemoryPointer.new(:size_t)
-      rc = yield(buf, cap, need)
-      n = need.read(:size_t)
-      if rc == Status::BUFFER_TOO_SMALL && n > cap
-        buf = FFI::MemoryPointer.new(n)
-        rc = yield(buf, n, need)
+      begin
+        rc = yield(buf, cap, need)
         n = need.read(:size_t)
+        if rc == Status::BUFFER_TOO_SMALL && n > cap
+          buf.clear
+          buf = FFI::MemoryPointer.new(n)
+          rc = yield(buf, n, need)
+          n = need.read(:size_t)
+        end
+        check(rc)
+        discard ? nil : buf.read_bytes(n)
+      ensure
+        buf.clear
       end
-      check(rc)
-      buf.read_bytes(n)
     end
 
     # Normalises the accepted input types to a binary String borrowed

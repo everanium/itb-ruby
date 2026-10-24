@@ -2,5 +2,5 @@
 
 module ITB
   # Binding version. Tracks the libitb3 shared-library release line.
-  VERSION = "0.7.4"
+  VERSION = "0.7.5"
 end
