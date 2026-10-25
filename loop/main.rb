@@ -99,6 +99,8 @@ module Loop
      "concurrent workers (1..10); on runtimes without parallelism values above 1 are clamped to 1"],
     ["hash", "string", STRING, "areion512",
      "inner ITB hash primitive name"],
+    ["interlock", "string", STRING, "",
+     "Interlocked Barrier chunk width: 48 | 168; empty = profile default (48; 168 requires 512-bit hash)"],
     ["iterations", "int", INT64, 0,
      "fixed per-worker iteration count; 0 = duration-based"],
     ["json-output", "", BOOL, false,
@@ -140,7 +142,7 @@ module Loop
     :payload, :memlimit, :memlimit_auto, :gogc, :parallax, :wrapper,
     :profile, :key_bits, :nonce_bits, :chunk_size, :barrier_fill, :gomaxprocs,
     :rekey_every, :blob_cycle_every, :payload_mode, :seed, :json_output, :memprofile,
-    :blob_mode, :drbg
+    :blob_mode, :drbg, :interlock
   )
 
   module Main
@@ -404,6 +406,11 @@ module Loop
       end
       # Validated by Init: the C ABI enumerates no DRBG names.
       cfg.drbg = raw["drbg"]
+      cfg.interlock = raw["interlock"]
+      unless ["", "48", "168"].include?(cfg.interlock)
+        err("--interlock must be 48 | 168 (or empty = profile default), got \"#{cfg.interlock}\"")
+        return [-1, nil]
+      end
       cfg.chunk_size = s.parse_size(raw["chunk-size"])
       if cfg.chunk_size.nil?
         err("--chunk-size: invalid size \"#{raw['chunk-size']}\"")
@@ -507,7 +514,8 @@ module Loop
         "parallax=#{Loop.on_off(record.fetch('parallax', false) == true)} " \
         "wrapper=#{Loop.on_off(record.fetch('wrapper', false) == true)}" \
         "#{record['container_mode'] == 2 ? ' container-mode=2' : ''}" \
-        "#{record_str(record, 'drbg') == '-' ? '' : " drbg=#{record['drbg']}"}"
+        "#{record_str(record, 'drbg') == '-' ? '' : " drbg=#{record['drbg']}"}" \
+        "#{record_str(record, 'interlock') == '-' ? '' : " interlock=#{record['interlock']}"}"
       )
     end
 
@@ -570,6 +578,7 @@ module Loop
         "nonceBits" => cfg.nonce_bits.to_s,
         "barrierFill" => cfg.barrier_fill.to_s,
         "drbg" => cfg.drbg,
+        "interlock" => cfg.interlock,
         "chunkSize" => cfg.chunk_size.to_s
       }
       unless cfg.profile.empty?
@@ -647,7 +656,8 @@ module Loop
         "payload-mode=#{Payload.mode_name(cfg.payload_mode)} seed=#{cfg.seed} " \
         "json-output=#{cfg.json_output ? 'true' : 'false'}" \
         "#{cfg.blob_mode == 1 ? '' : " blob-mode=#{cfg.blob_mode}"}" \
-        "#{cfg.drbg.empty? ? '' : " drbg=#{cfg.drbg}"}"
+        "#{cfg.drbg.empty? ? '' : " drbg=#{cfg.drbg}"}" \
+        "#{cfg.interlock.empty? ? '' : " interlock=#{cfg.interlock}"}"
       )
       Loop.log_line(
         "policy: microbatch-tiers=#{Loop.policy_label(ENV.fetch('ITB_MICROBATCH_TIERS', nil))} " \

@@ -541,4 +541,26 @@ class ItbTest < Minitest::Test
   ensure
     pipe&.free
   end
+
+  def test_interlock_168_round_trip_and_inspect
+    sender = ITB.create("singlemsg-triple-mac-v1", { "interlock" => "168" })
+    plain = "interlock 168 round trip"
+    wire = sender.encrypt_message(plain)
+    assert_equal plain, sender.decrypt_message(wire)
+    blob = sender.save
+    assert_equal "168", ITB.inspect_blob(blob)["interlock"]
+    receiver = ITB.load(blob)
+    assert_equal plain, receiver.decrypt_message(wire)
+
+    [
+      { "innerHash" => "blake3", "interlock" => "168" },
+      { "interlock" => "96" }
+    ].each do |bad_opts|
+      err = assert_raises(ITB::Error) { ITB.create("singlemsg-triple-mac-v1", bad_opts) }
+      assert_equal ITB::Status::BAD_INPUT, err.status_code
+    end
+  ensure
+    sender&.free
+    receiver&.free
+  end
 end

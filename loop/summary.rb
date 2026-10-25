@@ -286,6 +286,7 @@ module Loop
       out << format(',"blob_mode":%d', cfg.blob_mode)
       out << format(',"drbg":%s', JSON.generate(cfg.drbg))
       out << format(',"drbg_auto_tier":%s', JSON.generate(ITB.drbg_auto_tier))
+      out << format(',"interlock":%s', JSON.generate(cfg.interlock))
       out << format(',"chunk_size_bytes":%d', cfg.chunk_size)
       out << format(',"barrier_fill":%d', cfg.barrier_fill)
       out << format(',"parallax":"%s"', Loop.on_off(cfg.parallax))
